@@ -7,6 +7,14 @@ fork复制父进程的用户空间的内存到子进程中，然后子进程exec
 ### Solution
 COW fork只给子进程创建一个页表，同时用户内存的PTE指向父进程的物理页，即不给子进程份分配新的物理页，只增加物理页的ref cnt，共享同一份物理页。COW fork将父进程和子进程的PTE(page table entry)权限标记为不可写。当父进程或子进程写COW页时，CPU会触发page fault信号。trap handler会侦测到page fault，然后给发生fault的进程分配一页物理页，然后复制原先物理页的内容到新的物理页中，并修改faulting进程的页表的pte指向新的物理页，以及标志pte为可写。当page fault handler返回时，用户进程将能够写该复制页。
 
+### Implementation
+
+0. fork时，不给子进程份分配新的物理页，只增加物理页的ref cnt，并增加子进程的映射，共享同一份物理页
+1. 分配物理页时，设置每一块物理页的初始引用计数为1
+2. 释放物理页时，只有引用计数为0才释放
+3. 当发生异常时(如只读的页面试图写)，释放共享的物理页(-1)，申请一块新的物理页，并填写数据，修改权限
+4. 当需要从内核copy数据到用户空间时，如果用户空间的地址指向的是COW页(假设不可写)，给COW页释放共享的物理页(-1)，申请一块新的物理页，并填写数据，修改权限
+
 ## mmap/munmap
 
 ### Problem
@@ -17,8 +25,7 @@ open文件后，通过mmap将文件映射到内存中实现随机访问，减少
 对于随机访问，不再需要频繁lseek，减少系统调用次数，减少数据copy(不需要经过中间buffer)，访问的局部更好。
 
 ### Solution
-给每个进程增加vm_area_struct数组，记录进程的vm_area，调用mmap时，只记录mmap的地址、大小、prot(PROT_READ/PROT_WRITE)、flag(MAP_SHARED/MAP_PRIVATE)，增加进程的vm_area的大小，不作实际分配(lazy allocation)，当进程访问该地址时，触发缺页中断，分配物理内存，读取文件对应inode内容到物理内存中并增加进程的页表映射。
-
+给每个进程增加vm_area_struct数组，记录进程的vm_area，调用mmap时，只记录mmap要映射到哪个地址，记录fd，从fd的哪个位置开始，prot(PROT_READ/PROT_WRITE)、flag(MAP_SHARED/MAP_PRIVATE)，增加进程的vm_area的大小，不作实际分配(lazy allocation)，当进程访问该地址时，触发缺页中断，分配物理内存，读取文件对应inode内容到物理内存中并增加进程的页表映射。
 
 ## read/write
 
@@ -33,6 +40,7 @@ read/write ->  sys_read/sys_write -> readi/writei -> bread/bwrite
 spinlock : 可能某个进程频繁的持有lock，进程不会休眠，一直旋转
 
 ticker lock : spinlock + {next, owner}   按申请锁的顺序分配锁，公平
+owner:当前正在吃的食客  next:表示放号的最新值
 
 提高读的性能，允许读并行，即读的时候能够多个进程进入critical section :  rwlock/RCU(Read-Copy-Update)
 
@@ -73,3 +81,26 @@ ext2
 FAT32
 
 NTFS(移动硬盘)
+
+
+# 进程切换
+
+context，即callee-saved寄存器，包括ra(i.e pc)、 sp(指向内核栈)、其他寄存器等。
+
+# 进入内核的方式(Trap)
+
+关中断，保存断点，设置scause，设置status，跳到中断处理函数...
+
+注意到CPU没有自动切换内核页表，没有切换内核栈，除了pc以外没有保存任何寄存器，所以内核软件应该做这些任务。
+
+寄存器可以用来系统系统调用的参数，如a0 a1表示调用的第一、第二个参数，a7表示系统调用号。
+
+```
+跳入 : uservec (kernel/trampoline.S:16) --> usertrap (kernel/trap.c:37)
+
+返回 : usertrapret (kernel/trap.c:90)  --> userret (kernel/trampoline.S:88)
+```
+
+系统调用 : ecall，然后uservec --> usertrap --> syscall.
+
+异常/中断 : 捕捉，然后handler
