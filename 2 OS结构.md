@@ -62,3 +62,7 @@ init进程使用fork出一个子进程用来执行sh，父进程使用wait等待
 # 附录
 subvert 颠覆
 tailor 裁缝 tailored 量身定做的
+
+# 机器是如何启动，直到出现第一个终端
+
+电脑通电后，初始化一些东西，然后执行RAM中的boot loader(引导程序)。 boot loader会将xv6内核加载到内存，此时CPU在machine mode初始化栈，然后调用start函数，因为它下一步要跳到supervisor mode，start函数需要设置一些寄存器的值，比如pc等，然后调用mret跳到supervisor mode，因为之前已经设置过pc，所以会跳到main函数，这个函数会初始化控制台，初始化物理内存，创建内核页表等等，还会初始化第一个用户进程，然后main函数会调用scheduler跳到第一个用户进程，该进程会使用fork出一个子进程用来执行sh，父进程使用wait等待子进程退出，如果子进程退出，父进程重新fork子进程执行shell，让shell不断运行。

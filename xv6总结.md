@@ -31,8 +31,11 @@ open文件后，通过mmap将文件映射到内存中实现随机访问，减少
 
 read/write ->  sys_read/sys_write -> readi/writei -> bread/bwrite
 
-硬盘上的块在内核中有缓存
+open
 
+如果是创建 ： create返回一个inode，然后分配文件描述符，并把文件描述符的inode指向返回的inode，返回文件描述符
+
+如果是打开 ： namei返回文件的inode，然后分配文件描述符，并把文件描述符的inode指向返回的inode，返回文件描述符
 
 # lock
 
@@ -87,6 +90,8 @@ NTFS(移动硬盘)
 
 context，即callee-saved寄存器，包括ra(i.e pc)、 sp(指向内核栈)、其他寄存器等。
 
+线程切换与协程切换相比，代价主要在于需要进出内核！
+
 # 进入内核的方式(Trap)
 
 关中断，保存断点，设置scause，设置status，跳到中断处理函数...
@@ -104,3 +109,86 @@ context，即callee-saved寄存器，包括ra(i.e pc)、 sp(指向内核栈)、�
 系统调用 : ecall，然后uservec --> usertrap --> syscall.
 
 异常/中断 : 捕捉，然后handler
+
+# 同步机制
+
+## 信号量
+
+P 消费者，等待，直到资源非0，然后将资源数量减1
+
+V 生产者，资源加一
+
+实现方式：
+
+![](img/chapter7/1.png)
+
+![](img/chapter7/2.png)
+
+通过sleep/wakeup方式使用。
+
+sleep : 标记进程为sleeping，然后执行sched
+
+```
+void
+sleep(void *chan, struct spinlock *lk)
+{
+  struct proc *p = myproc();
+
+  // Must acquire p->lock in order to
+  // change p->state and then call sched.
+  // Once we hold p->lock, we can be
+  // guaranteed that we won't miss any wakeup
+  // (wakeup locks p->lock),
+  // so it's okay to release lk.
+
+  acquire(&p->lock);  //DOC: sleeplock1
+  release(lk);
+
+  // Go to sleep.
+  p->chan = chan;
+  p->state = SLEEPING;
+
+  sched();
+
+  // Tidy up.
+  p->chan = 0;
+
+  // Reacquire original lock.
+  release(&p->lock);
+  acquire(lk);
+}
+```
+wakeup : 寻找睡眠在给定channel的进程，然后标记为RUNNABLE
+一把锁不够，所以两把锁，sleep()
+```
+void
+wakeup(void *chan)
+{
+  struct proc *p;
+
+  for(p = proc; p < &proc[NPROC]; p++) {
+    if(p != myproc()){
+      acquire(&p->lock);
+      if(p->state == SLEEPING && p->chan == chan) {
+        p->state = RUNNABLE;
+      }
+      release(&p->lock);
+    }
+  }
+}
+```
+
+## 协程
+
+每个协程维护上下文、栈、以及自身的状态(Free Running Runnable)
+
+协程创建时需要将上下文的返回地址ra设置为函数的地址，以及设置上下文的sp指向栈底
+
+每个协程需要主动让出CPU
+
+
+## 进程通信VS线程通信
+
+线程之间资源是共享的，主要将安全：信号量、锁、原子操作
+
+进程之间资源是独立的，讲通信：管道、共享内存、信号、套接字
